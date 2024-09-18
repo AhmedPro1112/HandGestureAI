@@ -1,3 +1,4 @@
+import numpy as np
 import cv2
 import mediapipe as mp
 
@@ -20,12 +21,23 @@ finger_landmarks = {
     'Pinky': [17, 18, 19, 20]
 }
 
-# Resize factor for larger screen
-resize_factor = 1.5
-
 # Define fixed vertical positions for finger labels
 finger_label_positions = {'Left': {'x': 10, 'y': 50}, 'Right': {'x': 400, 'y': 50}}
 spacing = 30  # Space between finger labels
+
+# Gesture recognition rules
+def recognize_gesture(fingers_up):
+    if all(fingers_up[finger] for finger in fingers_up):
+        return "Open Hand"
+    elif not any(fingers_up[finger] for finger in fingers_up):
+        return "Fist"
+    elif fingers_up['Index'] and fingers_up['Middle'] and not fingers_up['Ring'] and not fingers_up['Pinky']:
+        return "Peace"
+    else:
+        return "Unknown Gesture"
+
+# Create a named window for resizing
+cv2.namedWindow('Hand Gesture Recognition', cv2.WINDOW_NORMAL)
 
 while True:
     ret, frame = cap.read()
@@ -63,6 +75,9 @@ while True:
                 # If tip is above the base, finger is up
                 if tip_y < base_y:
                     fingers_up[finger] = True
+            
+            # Recognize gesture
+            gesture = recognize_gesture(fingers_up)
             
             # Display finger status
             finger_text = [f'{finger} Up' for finger, is_up in fingers_up.items() if is_up]
@@ -104,11 +119,34 @@ while True:
             for i, finger in enumerate(finger_text):
                 cv2.putText(frame, finger, (base_x, base_y + i * spacing), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
+            # Display the gesture label below the finger labels in pink
+            gesture_x = base_x
+            gesture_y = base_y + len(finger_text) * spacing + 40
+            cv2.putText(frame, gesture, (gesture_x, gesture_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+
+    # Get the original frame size
+    height, width = frame.shape[:2]
+    
+    # Get the window size
+    screen_width = cv2.getWindowImageRect('Hand Gesture Recognition')[2]
+    screen_height = cv2.getWindowImageRect('Hand Gesture Recognition')[3]
+    
+    # Calculate the aspect ratio of the frame
+    aspect_ratio = width / height
+    
+    # Resize the frame while keeping the aspect ratio
+    if screen_width / screen_height > aspect_ratio:
+        new_height = screen_height
+        new_width = int(screen_height * aspect_ratio)
+    else:
+        new_width = screen_width
+        new_height = int(screen_width / aspect_ratio)
+    
     # Resize the frame
-    large_frame = cv2.resize(frame, (0, 0), fx=resize_factor, fy=resize_factor)
+    resized_frame = cv2.resize(frame, (new_width, new_height))
     
     # Display the resized frame with landmarks
-    cv2.imshow('Hand Gesture Recognition', large_frame)
+    cv2.imshow('Hand Gesture Recognition', resized_frame)
 
     # Exit loop if 'q' is pressed
     if cv2.waitKey(1) & 0xFF == ord('q'):
