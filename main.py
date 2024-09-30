@@ -1,6 +1,8 @@
 import numpy as np
 import cv2
 import mediapipe as mp
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Forces TensorFlow Lite to use CPU only.
 
 # Initialize MediaPipe Hands model
 mp_hands = mp.solutions.hands
@@ -10,7 +12,10 @@ hands = mp_hands.Hands()
 mp_drawing = mp.solutions.drawing_utils
 
 # Capture video from webcam
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(0)  # Open the webcam
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+
 
 # Define finger landmark indices
 finger_landmarks = {
@@ -128,9 +133,22 @@ while True:
     height, width = frame.shape[:2]
     
     # Get the window size
+  # Set an initial window size
+    cv2.resizeWindow('Hand Gesture Recognition', 800, 600)
+
+    # Now get the window size
     screen_width = cv2.getWindowImageRect('Hand Gesture Recognition')[2]
     screen_height = cv2.getWindowImageRect('Hand Gesture Recognition')[3]
-    
+
+    screen_width = screen_width if screen_width > 0 else 800  # Default to 800 if zero
+    screen_height = screen_height if screen_height > 0 else 600  # Default to 600 if zero
+
+
+    if screen_height == 0 or screen_width == 0:
+        print("Error: Screen dimensions are zero.")
+        exit()
+
+
     # Calculate the aspect ratio of the frame
     aspect_ratio = width / height
     
