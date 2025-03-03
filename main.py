@@ -1,23 +1,22 @@
-import numpy as np
 import cv2
 import mediapipe as mp
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Forces TensorFlow Lite to use CPU only.
+from collections import deque
 
-# Initialize MediaPipe Hands model
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU usage
+
+# Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands()
-
-# Initialize drawing utility
+hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.7)
 mp_drawing = mp.solutions.drawing_utils
 
-# Capture video from webcam
-cap = cv2.VideoCapture(0)  # Open the webcam
+# Initialize webcam
+cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
+    exit()
 
-
-# Define finger landmark indices
+# Configuration
 finger_landmarks = {
     'Thumb': [1, 2, 3, 4],
     'Index': [5, 6, 7, 8],
@@ -26,150 +25,161 @@ finger_landmarks = {
     'Pinky': [17, 18, 19, 20]
 }
 
-# Define fixed vertical positions for finger labels
-finger_label_positions = {'Left': {'x': 10, 'y': 50}, 'Right': {'x': 400, 'y': 50}}
-spacing = 30  # Space between finger labels
+motion_history = {
+    'Left': deque(maxlen=15),
+    'Right': deque(maxlen=15)
+}
 
-# Gesture recognition rules
-def recognize_gesture(fingers_up):
-    if all(fingers_up[finger] for finger in fingers_up):
-        return "Open Hand"
-    elif not any(fingers_up[finger] for finger in fingers_up):
-        return "Fist"
-    elif fingers_up['Index'] and fingers_up['Middle'] and not fingers_up['Ring'] and not fingers_up['Pinky']:
-        return "Peace"
-    else:
-        return "Unknown Gesture"
+DISPLAY_CONFIG = {
+    'positions': {'Left': (10, 50), 'Right': (400, 50)},
+    'spacing': 30,
+    'colors': {'static': (255, 0, 255), 'motion': (0, 255, 255)}
+}
 
-# Create a named window for resizing
-cv2.namedWindow('Hand Gesture Recognition', cv2.WINDOW_NORMAL)
+GESTURE_PARAMS = {
+    'MOTION_THRESHOLD': 40,
+    'CIRCLE_THRESHOLD': 100
+}
+
+def recognize_static_gesture(fingers_up):
+    try:
+        # Basic gestures
+        if all(fingers_up.values()):
+            return "Hello"
+        if not any(fingers_up.values()):
+            return "Fist"
+        if fingers_up['Index'] and fingers_up['Middle'] and not others_up(fingers_up, ['Index', 'Middle']):
+            return "Peace"
+        if fingers_up['Thumb'] and not others_up(fingers_up, ['Thumb']):
+            return "Yes"
+        if fingers_up['Index'] and not others_up(fingers_up, ['Index']):
+            return "No"
+        
+        # Advanced gestures
+        if (fingers_up['Thumb'] and fingers_up['Index'] and fingers_up['Pinky'] and 
+            not others_up(fingers_up, ['Thumb', 'Index', 'Pinky'])):
+            return "I Love You"
+        if fingers_up['Thumb'] and fingers_up['Index'] and not others_up(fingers_up, ['Thumb', 'Index']):
+            return "Okay"
+        if (fingers_up['Middle'] and fingers_up['Ring'] and fingers_up['Pinky'] and 
+            not others_up(fingers_up, ['Middle', 'Ring', 'Pinky'])):
+            return "Metal"
+        if fingers_up['Thumb'] and fingers_up['Pinky'] and not others_up(fingers_up, ['Thumb', 'Pinky']):
+            return "Call Me"
+        if (fingers_up['Index'] and fingers_up['Thumb'] and fingers_up['Middle'] and 
+            not others_up(fingers_up, ['Index', 'Thumb', 'Middle'])):
+            return "Three"
+        
+        return "Unknown"
+    except KeyError as e:
+        print(f"Gesture recognition error: {str(e)}")
+        return "Unknown"
+
+def others_up(fingers_up, exclude):
+    return any(v for k, v in fingers_up.items() if k not in exclude)
+
+def recognize_motion_gesture(positions):
+    try:
+        if len(positions) < 5:
+            return None
+
+        # Calculate movement vectors
+        dx = []
+        dy = []
+        for i in range(1, len(positions)):
+            dx.append(positions[i][0] - positions[i-1][0])
+            dy.append(positions[i][1] - positions[i-1][1])
+
+        if not dx or not dy:
+            return None
+
+        avg_dx = sum(dx) / len(dx)
+        avg_dy = sum(dy) / len(dy)
+        total_movement = sum(abs(x) + abs(y) for x, y in zip(dx, dy))
+
+        if total_movement < GESTURE_PARAMS['MOTION_THRESHOLD']:
+            return None
+
+        # Direction analysis
+        x_directions = [1 if x > 0 else -1 for x in dx if x != 0]
+        direction_changes = sum(x_directions[i] != x_directions[i+1] 
+                              for i in range(len(x_directions)-1)) if len(x_directions) > 1 else 0
+
+        # Gesture patterns
+        if direction_changes >= 2 and sum(abs(x) for x in dx) > GESTURE_PARAMS['CIRCLE_THRESHOLD']:
+            return "Waving"
+        
+        if (max(p[0] for p in positions) - min(p[0] for p in positions) > GESTURE_PARAMS['CIRCLE_THRESHOLD'] and
+            max(p[1] for p in positions) - min(p[1] for p in positions) > GESTURE_PARAMS['CIRCLE_THRESHOLD']):
+            return "Circle (Wait)"
+
+        # Directional movements
+        if abs(avg_dy) > abs(avg_dx) * 2:
+            return "Move Up" if avg_dy < 0 else "Move Down"
+        
+        if abs(avg_dx) > abs(avg_dy) * 2:
+            return "Move Right" if avg_dx > 0 else "Move Left"
+        
+        return None
+    except Exception as e:
+        print(f"Motion detection error: {str(e)}")
+        return None
+
+# Main processing loop
+cv2.namedWindow('Hand Gesture AI', cv2.WINDOW_NORMAL)
 
 while True:
     ret, frame = cap.read()
-    
     if not ret:
         break
-    
-    # Flip the frame horizontally
-    frame = cv2.flip(frame, 1)  # 1 means flip horizontally
-    
-    # Convert the frame to RGB (as required by MediaPipe)
+
+    frame = cv2.flip(frame, 1)
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    # Process the frame and detect hands
     results = hands.process(rgb_frame)
-    
-    # Draw hand landmarks if any are detected
+
     if results.multi_hand_landmarks:
         for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-            # Draw bones (lines) between landmarks
-            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-            
-            # Get the hand label
             hand_label = handedness.classification[0].label
 
-            # Determine which fingers are up
+            # Finger state detection
             fingers_up = {finger: False for finger in finger_landmarks}
-
             for finger, landmarks in finger_landmarks.items():
-                tip_id = landmarks[-1]  # Tip landmark index
-                base_id = landmarks[0]  # Base landmark index
-                tip_y = hand_landmarks.landmark[tip_id].y
-                base_y = hand_landmarks.landmark[base_id].y
+                tip = hand_landmarks.landmark[landmarks[-1]]
+                base = hand_landmarks.landmark[landmarks[0]]
+                fingers_up[finger] = tip.y < base.y
 
-                # If tip is above the base, finger is up
-                if tip_y < base_y:
-                    fingers_up[finger] = True
+            # Gesture recognition
+            static_gesture = recognize_static_gesture(fingers_up)
             
-            # Recognize gesture
-            gesture = recognize_gesture(fingers_up)
-            
-            # Display finger status
-            finger_text = [f'{finger} Up' for finger, is_up in fingers_up.items() if is_up]
-            
-            # Calculate bounding box coordinates
-            min_x, max_x = float('inf'), float('-inf')
-            min_y, max_y = float('inf'), float('-inf')
-            
-            for landmark in hand_landmarks.landmark:
-                x = int(landmark.x * frame.shape[1])
-                y = int(landmark.y * frame.shape[0])
+            # Motion tracking
+            wrist_pos = (hand_landmarks.landmark[0].x * frame.shape[1],
+                         hand_landmarks.landmark[0].y * frame.shape[0])
+            motion_history[hand_label].append(wrist_pos)
+            motion_gesture = recognize_motion_gesture(list(motion_history[hand_label]))
 
-                # Update bounding box coordinates
-                if x < min_x:
-                    min_x = x
-                if x > max_x:
-                    max_x = x
-                if y < min_y:
-                    min_y = y
-                if y > max_y:
-                    max_y = y
+            # Display information
+            x, y = DISPLAY_CONFIG['positions']['Left' if hand_label == 'Left' else 'Right']
+            finger_text = [f"{finger} Up" for finger, up in fingers_up.items() if up]
 
-                # Draw pink circles on each landmark
-                cv2.circle(frame, (x, y), 5, (255, 0, 255), -1)  # Pink color
-            
-            # Display the hand label above the hand
-            hand_label_x = int((min_x + max_x) / 2)
-            hand_label_y = int(min_y - 10)  # Place above the hand
-            cv2.putText(frame, f'{hand_label} Hand', (hand_label_x, hand_label_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            # Draw static gesture
+            cv2.putText(frame, f"Static: {static_gesture}",
+                       (x, y + len(finger_text) * DISPLAY_CONFIG['spacing'] + 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, DISPLAY_CONFIG['colors']['static'], 2)
 
-            # Display which fingers are up in a vertical list
-            if hand_label == 'Left':
-                base_x = finger_label_positions['Left']['x']
-                base_y = finger_label_positions['Left']['y']
-            else:
-                base_x = finger_label_positions['Right']['x']
-                base_y = finger_label_positions['Right']['y']
-            
-            for i, finger in enumerate(finger_text):
-                cv2.putText(frame, finger, (base_x, base_y + i * spacing), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            # Draw motion gesture
+            if motion_gesture:
+                cv2.putText(frame, f"Motion: {motion_gesture}",
+                           (x, y + len(finger_text) * DISPLAY_CONFIG['spacing'] + 80),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, DISPLAY_CONFIG['colors']['motion'], 2)
 
-            # Display the gesture label below the finger labels in pink
-            gesture_x = base_x
-            gesture_y = base_y + len(finger_text) * spacing + 40
-            cv2.putText(frame, gesture, (gesture_x, gesture_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+            # Draw landmarks
+            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-    # Get the original frame size
-    height, width = frame.shape[:2]
-    
-    # Get the window size
-  # Set an initial window size
-    cv2.resizeWindow('Hand Gesture Recognition', 800, 600)
-
-    # Now get the window size
-    screen_width = cv2.getWindowImageRect('Hand Gesture Recognition')[2]
-    screen_height = cv2.getWindowImageRect('Hand Gesture Recognition')[3]
-
-    screen_width = screen_width if screen_width > 0 else 800  # Default to 800 if zero
-    screen_height = screen_height if screen_height > 0 else 600  # Default to 600 if zero
-
-
-    if screen_height == 0 or screen_width == 0:
-        print("Error: Screen dimensions are zero.")
-        exit()
-
-
-    # Calculate the aspect ratio of the frame
-    aspect_ratio = width / height
-    
-    # Resize the frame while keeping the aspect ratio
-    if screen_width / screen_height > aspect_ratio:
-        new_height = screen_height
-        new_width = int(screen_height * aspect_ratio)
-    else:
-        new_width = screen_width
-        new_height = int(screen_width / aspect_ratio)
-    
-    # Resize the frame
-    resized_frame = cv2.resize(frame, (new_width, new_height))
-    
-    # Display the resized frame with landmarks
-    cv2.imshow('Hand Gesture Recognition', resized_frame)
-
-    # Exit loop if 'q' is pressed
+    # Display window
+    cv2.imshow('Hand Gesture AI', cv2.resize(frame, (800, 600)))
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# Release video capture
+# Cleanup
 cap.release()
 cv2.destroyAllWindows()
