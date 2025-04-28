@@ -1,185 +1,227 @@
 import cv2
 import mediapipe as mp
-import os
-from collections import deque
+import math
+import random
+import time
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU usage
-
-# Initialize MediaPipe Hands
+# Initialize MediaPipe components
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.7)
-mp_drawing = mp.solutions.drawing_utils
+mp_face = mp.solutions.face_mesh
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
+)
+face_mesh = mp_face.FaceMesh(
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+    max_num_faces=1
+)
 
-# Initialize webcam
-cap = cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("Error: Could not open webcam.")
-    exit()
+# System states
+PLAYING_GAME = False
+LAST_COMPUTER_CHOICE_TIME = 0
+COMPUTER_CHOICE = None
+PLAYER_CHOICE = None
+FACE_BOX_VISIBLE = False
 
-# Configuration
-finger_landmarks = {
-    'Thumb': [1, 2, 3, 4],
-    'Index': [5, 6, 7, 8],
-    'Middle': [9, 10, 11, 12],
-    'Ring': [13, 14, 15, 16],
-    'Pinky': [17, 18, 19, 20]
-}
+def get_face_bounding_box(face_landmarks, frame):
+    h, w = frame.shape[:2]
+    xs = [lm.x * w for lm in face_landmarks.landmark]
+    ys = [lm.y * h for lm in face_landmarks.landmark]
+    return (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
 
-motion_history = {
-    'Left': deque(maxlen=15),
-    'Right': deque(maxlen=15)
-}
-
-DISPLAY_CONFIG = {
-    'positions': {'Left': (10, 50), 'Right': (400, 50)},
-    'spacing': 30,
-    'colors': {'static': (255, 0, 255), 'motion': (0, 255, 255)}
-}
-
-GESTURE_PARAMS = {
-    'MOTION_THRESHOLD': 40,
-    'CIRCLE_THRESHOLD': 100
-}
-
-def recognize_static_gesture(fingers_up):
+def detect_mood(face_landmarks):
     try:
-        # Basic gestures
-        if all(fingers_up.values()):
-            return "Hello"
-        if not any(fingers_up.values()):
-            return "Fist"
-        if fingers_up['Index'] and fingers_up['Middle'] and not others_up(fingers_up, ['Index', 'Middle']):
-            return "Peace"
-        if fingers_up['Thumb'] and not others_up(fingers_up, ['Thumb']):
-            return "Yes"
-        if fingers_up['Index'] and not others_up(fingers_up, ['Index']):
-            return "No"
+        # Get key facial points
+        mouth_top = face_landmarks.landmark[13]     # Upper lip center
+        mouth_bottom = face_landmarks.landmark[14]  # Lower lip center
+        mouth_left = face_landmarks.landmark[61]    # Left mouth corner
+        mouth_right = face_landmarks.landmark[291]  # Right mouth corner
+        mouth_center = face_landmarks.landmark[0]   # Chin center
+
+        # Calculate mouth features
+        mouth_openness = abs(mouth_top.y - mouth_bottom.y)
+        # Print mouth_openness to the console
+        print(f"Mouth Openness: {mouth_openness}, mouth corners: {mouth_left.y}, {mouth_right.y}")
+        mouth_corners_avg = (mouth_left.y + mouth_right.y) / 2
         
-        # Advanced gestures
-        if (fingers_up['Thumb'] and fingers_up['Index'] and fingers_up['Pinky'] and 
-            not others_up(fingers_up, ['Thumb', 'Index', 'Pinky'])):
-            return "I Love You"
-        if fingers_up['Thumb'] and fingers_up['Index'] and not others_up(fingers_up, ['Thumb', 'Index']):
-            return "Okay"
-        if (fingers_up['Middle'] and fingers_up['Ring'] and fingers_up['Pinky'] and 
-            not others_up(fingers_up, ['Middle', 'Ring', 'Pinky'])):
-            return "Metal"
-        if fingers_up['Thumb'] and fingers_up['Pinky'] and not others_up(fingers_up, ['Thumb', 'Pinky']):
-            return "Call Me"
-        if (fingers_up['Index'] and fingers_up['Thumb'] and fingers_up['Middle'] and 
-            not others_up(fingers_up, ['Index', 'Thumb', 'Middle'])):
-            return "Three"
+        # Detect frown (sadness indicator)
+        is_frowning = mouth_corners_avg > mouth_center.y + 0.02
         
-        return "Unknown"
-    except KeyError as e:
-        print(f"Gesture recognition error: {str(e)}")
-        return "Unknown"
-
-def others_up(fingers_up, exclude):
-    return any(v for k, v in fingers_up.items() if k not in exclude)
-
-def recognize_motion_gesture(positions):
-    try:
-        if len(positions) < 5:
-            return None
-
-        # Calculate movement vectors
-        dx = []
-        dy = []
-        for i in range(1, len(positions)):
-            dx.append(positions[i][0] - positions[i-1][0])
-            dy.append(positions[i][1] - positions[i-1][1])
-
-        if not dx or not dy:
-            return None
-
-        avg_dx = sum(dx) / len(dx)
-        avg_dy = sum(dy) / len(dy)
-        total_movement = sum(abs(x) + abs(y) for x, y in zip(dx, dy))
-
-        if total_movement < GESTURE_PARAMS['MOTION_THRESHOLD']:
-            return None
-
-        # Direction analysis
-        x_directions = [1 if x > 0 else -1 for x in dx if x != 0]
-        direction_changes = sum(x_directions[i] != x_directions[i+1] 
-                              for i in range(len(x_directions)-1)) if len(x_directions) > 1 else 0
-
-        # Gesture patterns
-        if direction_changes >= 2 and sum(abs(x) for x in dx) > GESTURE_PARAMS['CIRCLE_THRESHOLD']:
-            return "Waving"
+        # Detect smile (happiness indicator)
+        is_smiling = mouth_openness > 0.04
         
-        if (max(p[0] for p in positions) - min(p[0] for p in positions) > GESTURE_PARAMS['CIRCLE_THRESHOLD'] and
-            max(p[1] for p in positions) - min(p[1] for p in positions) > GESTURE_PARAMS['CIRCLE_THRESHOLD']):
-            return "Circle (Wait)"
 
-        # Directional movements
-        if abs(avg_dy) > abs(avg_dx) * 2:
-            return "Move Up" if avg_dy < 0 else "Move Down"
+        # Mood determination
+        if is_smiling:
+            return "HAPPY 😊"
+        elif is_frowning and mouth_openness < 0.05:
+            return "SAD 😢"
+        return "NEUTRAL 😐"
         
-        if abs(avg_dx) > abs(avg_dy) * 2:
-            return "Move Right" if avg_dx > 0 else "Move Left"
-        
-        return None
     except Exception as e:
-        print(f"Motion detection error: {str(e)}")
-        return None
+        print(f"Mood detection error: {e}")
+        return "NEUTRAL 😐"
 
-# Main processing loop
-cv2.namedWindow('Hand Gesture AI', cv2.WINDOW_NORMAL)
+def get_math_operation(hands_data):
+    if len(hands_data) == 2:
+        h1, h2 = hands_data
+        if sum(h1['fingers']) >=4 and sum(h2['fingers']) >=4:
+            return " = "
+        if h1['fingers'][1] and h2['fingers'][1]:
+            return " + "
+    elif len(hands_data) == 1:
+        hand = hands_data[0]
+        if hand['fingers'][1] and not any(hand['fingers'][2:]):
+            return " - "
+    return None
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+def get_number(hands_data):
+    total = 0
+    for hand in hands_data:
+        # Only count if hand is clearly showing numbers (all fingers down except counting ones)
+        if sum(hand['fingers']) in {0,1,2,3,4,5}:
+            total += sum(hand['fingers'][1:]) + (1 if hand['fingers'][0] else 0)
+    return total if 0 <= total <= 10 else None
 
-    frame = cv2.flip(frame, 1)
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb_frame)
+def handle_game(frame, hands_data):
+    global COMPUTER_CHOICE, PLAYER_CHOICE, LAST_COMPUTER_CHOICE_TIME
+    
+    # Update computer choice every 3 seconds
+    if time.time() - LAST_COMPUTER_CHOICE_TIME > 3:
+        COMPUTER_CHOICE = random.choice(['ROCK', 'PAPER', 'SCISSORS'])
+        LAST_COMPUTER_CHOICE_TIME = time.time()
+    
+    # Detect player choice
+    current_choice = None
+    if hands_data:
+        fingers = sum(hands_data[0]['fingers'])
+        current_choice = {
+            0: 'ROCK',
+            2: 'SCISSORS',
+            5: 'PAPER'
+        }.get(fingers, None)
+    
+    # Only update when valid choice detected
+    if current_choice and current_choice != PLAYER_CHOICE:
+        PLAYER_CHOICE = current_choice
+    
+    # Display game info
+    if COMPUTER_CHOICE and PLAYER_CHOICE:
+        results = {
+            ('ROCK', 'SCISSORS'): "YOU WIN! 🎉",
+            ('PAPER', 'ROCK'): "YOU WIN! 🎉", 
+            ('SCISSORS', 'PAPER'): "YOU WIN! 🎉",
+            ('ROCK', 'PAPER'): "YOU LOSE 😢",
+            ('PAPER', 'SCISSORS'): "YOU LOSE 😢",
+            ('SCISSORS', 'ROCK'): "YOU LOSE 😢"
+        }
+        result = results.get((PLAYER_CHOICE, COMPUTER_CHOICE), "DRAW! 🤝")
+        
+        y_pos = 50
+        cv2.putText(frame, f"Player: {PLAYER_CHOICE}", (20, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(frame, f"Computer: {COMPUTER_CHOICE}", (20, y_pos+40), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(frame, result, (20, y_pos+80), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+    
+    return frame
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-            hand_label = handedness.classification[0].label
+def main():
+    global PLAYING_GAME, COMPUTER_CHOICE, PLAYER_CHOICE, FACE_BOX_VISIBLE
+    
+    cap = cv2.VideoCapture(0)
+    last_frame_time = 0
+    
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success:
+            continue
 
-            # Finger state detection
-            fingers_up = {finger: False for finger in finger_landmarks}
-            for finger, landmarks in finger_landmarks.items():
-                tip = hand_landmarks.landmark[landmarks[-1]]
-                base = hand_landmarks.landmark[landmarks[0]]
-                fingers_up[finger] = tip.y < base.y
-
-            # Gesture recognition
-            static_gesture = recognize_static_gesture(fingers_up)
+        # Limit to 15 FPS for stability
+        if time.time() - last_frame_time < 0.066:
+            continue
+        last_frame_time = time.time()
+        
+        frame = cv2.flip(frame, 1)
+        display_frame = frame.copy()
+        
+        # Always process face for mood
+        face_results = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        mood = "NEUTRAL 😐"
+        FACE_BOX_VISIBLE = False
+        
+        if face_results.multi_face_landmarks:
+            face_landmarks = face_results.multi_face_landmarks[0]
+            mood = detect_mood(face_landmarks)
             
-            # Motion tracking
-            wrist_pos = (hand_landmarks.landmark[0].x * frame.shape[1],
-                         hand_landmarks.landmark[0].y * frame.shape[0])
-            motion_history[hand_label].append(wrist_pos)
-            motion_gesture = recognize_motion_gesture(list(motion_history[hand_label]))
+            # Draw face bounding box
+            x_min, y_min, x_max, y_max = get_face_bounding_box(face_landmarks, frame)
+            cv2.rectangle(display_frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+            FACE_BOX_VISIBLE = True
+        
+        # Always show mood top-left
+        cv2.putText(display_frame, f"Mood: {mood}", (20, 30 if FACE_BOX_VISIBLE else 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        # Process hands
+        hand_results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        hands_data = []
+        if hand_results.multi_hand_landmarks:
+            for hand_landmarks in hand_results.multi_hand_landmarks:
+                mp.solutions.drawing_utils.draw_landmarks(
+                    display_frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                
+                # Simplified finger state detection
+                fingers = [
+                    hand_landmarks.landmark[4].x < hand_landmarks.landmark[3].x,  # Thumb
+                    hand_landmarks.landmark[8].y < hand_landmarks.landmark[6].y,   # Index
+                    hand_landmarks.landmark[12].y < hand_landmarks.landmark[10].y, # Middle
+                    hand_landmarks.landmark[16].y < hand_landmarks.landmark[14].y, # Ring
+                    hand_landmarks.landmark[20].y < hand_landmarks.landmark[18].y  # Pinky
+                ]
+                hands_data.append({'fingers': fingers})
 
-            # Display information
-            x, y = DISPLAY_CONFIG['positions']['Left' if hand_label == 'Left' else 'Right']
-            finger_text = [f"{finger} Up" for finger, up in fingers_up.items() if up]
+        # Game invitation system
+        if not PLAYING_GAME:
+            if "SAD" in mood:
+                cv2.putText(display_frame, "Show thumbs up to play a game!", 
+                           (20, display_frame.shape[0]-50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+                if hands_data and hands_data[0]['fingers'][0]:
+                    PLAYING_GAME = True
+                    COMPUTER_CHOICE = random.choice(['ROCK', 'PAPER', 'SCISSORS'])
+            else:
+                # Education mode
+                math_op = get_math_operation(hands_data)
+                number = get_number(hands_data)
+                if math_op:
+                    cv2.putText(display_frame, math_op, 
+                               (display_frame.shape[1]//2-20, 100), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                elif number is not None:
+                    cv2.putText(display_frame, str(number), 
+                               (display_frame.shape[1]//2-20, 100), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        else:
+            # Game mode
+            display_frame = handle_game(display_frame, hands_data)
+            if "HAPPY" in mood:
+                cv2.putText(display_frame, "Smile detected! Exiting game...", 
+                           (20, display_frame.shape[0]-20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 200, 50), 1)
+                PLAYING_GAME = False
+                COMPUTER_CHOICE = None
 
-            # Draw static gesture
-            cv2.putText(frame, f"Static: {static_gesture}",
-                       (x, y + len(finger_text) * DISPLAY_CONFIG['spacing'] + 40),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, DISPLAY_CONFIG['colors']['static'], 2)
+        cv2.imshow('AI Learning Companion', display_frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-            # Draw motion gesture
-            if motion_gesture:
-                cv2.putText(frame, f"Motion: {motion_gesture}",
-                           (x, y + len(finger_text) * DISPLAY_CONFIG['spacing'] + 80),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, DISPLAY_CONFIG['colors']['motion'], 2)
+    cap.release()
+    cv2.destroyAllWindows()
 
-            # Draw landmarks
-            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-
-    # Display window
-    cv2.imshow('Hand Gesture AI', cv2.resize(frame, (800, 600)))
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-# Cleanup
-cap.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()
