@@ -1,4 +1,3 @@
-
 # HandGestureAI
 
 ### Hand Gesture Recognition with MediaPipe and OpenCV
@@ -78,11 +77,16 @@ It’s recommended to create a virtual environment to manage your dependencies.
    pip install -r requirements.txt
    ```
 
-   Alternatively, install the dependencies manually:
+   Alternatively, install the dependencies manually with specific versions:
 
    ```bash
-   pip install numpy opencv-python mediapipe
+   pip install numpy==1.26.4 opencv-python==4.11.0 mediapipe==0.10.21
    ```
+
+   The project uses the following library versions:
+   - OpenCV: 4.11.0
+   - MediaPipe: 0.10.21
+   - NumPy: 1.26.4
 
 ---
 
